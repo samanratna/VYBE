@@ -35,6 +35,26 @@
 
 #define CHAR_DECLARATION_SIZE   (sizeof(uint8_t))
 
+//for rgb led////////////////////
+#define RMT_TX_CHANNEL RMT_CHANNEL_0
+
+#define EXAMPLE_CHASE_SPEED_MS (10)
+#define LED_NUMBER 59
+
+#define IDEAL 1
+#define BREATHING 2
+#define CLEAR 3
+#define RUNNING_TRAIL 4
+
+float f;
+float bright = 0.5;
+float f1;
+int count = 0;
+uint8_t valRed = 255;
+uint8_t valGreen = 255;
+uint8_t valBlue = 255;
+/////////////////////////
+static const char *TAG = "VYBE";
 // SERVICES AND CHARACTERISTICS
 static const uint8_t VEHICLE_SERVICE_UUID[16]                      = {0x10, 0xd8, 0x3e, 0x12, 0x54, 0x1f, 0x94, 0xad, 0x6c, 0x4b, 0x92, 0x81, 0x22, 0x35, 0xc8, 0x2c};
 
@@ -57,7 +77,7 @@ int BLE_CONNECTION_STATUS;
 int red_colorspace;
 int green_colorspace;
 int blue_colorspace;
-int brightness_value;
+float brightness_value;
 int mode;
 int ack_value;
 

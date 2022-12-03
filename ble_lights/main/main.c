@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -12,10 +13,11 @@
 #include "esp_bt_main.h"
 #include "main.h"
 
-// Libraries from SIM Connectivity Code
+//for rgb led
+#include "driver/rmt.h"
+#include "led_strip.h"
+
 #include "string.h"
-#include "sim7600.h"
-// #include "driver/twai.h"
 
 // char* dummy_overall_data[]          = {"C1,111,111,111,111", "C2,222,222,222,222", "C3,333,333,333,333"};
 // char* dummy_overall_data1[]         = {"C1,111,111,111,222", "C2,222,222,222,333", "C3,333,333,333,444"};
@@ -28,6 +30,8 @@ static prepare_type_env_t prepare_write_env;
 static uint8_t adv_config_done = 0;
 static uint16_t BLE_COMM_DATABASE_TABLE[HRS_IDX_NB];
 static uint8_t test_manufacturer[10] = {'E', 'S', 'P','3','2','A','B','C','D','E'};
+
+int LEDState = 0;
 
 // UUID 
 static uint8_t sec_service_uuid[16] = {
@@ -348,28 +352,6 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         int _passkey = param->ble_security.key_notif.passkey;
         printf("BLE_STATUS :: YOUR PASSKEY IS %d\n", _passkey);
         uint8_t passkey_array[6];
-        for (int i = 0; i < 6; i++)
-        {
-            passkey_array[i] = _passkey % 10;
-            _passkey = _passkey / 10;
-            // printf("passkeys: %d\n", passkey_array[i]);
-        }
-
-        // Send all Passkeys to CAN
-        twai_tx_data[0] = passkey_array[5];
-        twai_tx_data[1] = passkey_array[4];
-        twai_tx_data[2] = passkey_array[3];
-        twai_tx_data[3] = passkey_array[2];
-        twai_tx_data[4] = passkey_array[1];
-        twai_tx_data[5] = passkey_array[0];
-        twai_tx(0x18FF0E28, 8);
-        twai_tx_data[0] = 0;
-        twai_tx_data[1] = 0;
-        twai_tx_data[2] = 0;
-        twai_tx_data[3] = 0;
-        twai_tx_data[4] = 0;
-        twai_tx_data[5] = 0;
-
         break;
 
     case ESP_GAP_BLE_KEY_EVT:
@@ -525,11 +507,11 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
                         printf("ACKNOWLEDGEMENT VALUE:: %d\n", ack_value);
 
                         // ACK FOR SUCCESSFUL DATA RETRIEVE
-                        BLE_notify_data(RECEIVE_SUCCESSFUL, ack_characteristics_value);
+                        // BLE_notify_data(RECEIVE_SUCCESSFUL, ack_characteristics_value);
                     }
 
                     // RECEIVE RGB COLORSPACE VALUE
-                    if(BLE_COMM_DATABASE_TABLE[rgb_characteristics_value]==param->write.handle){
+                    else if(BLE_COMM_DATABASE_TABLE[rgb_characteristics_value]==param->write.handle){
 
                         char rx_buffer[30];
                         sprintf(rx_buffer, "%s", BLE_write_value);
@@ -550,32 +532,40 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
                         green_colorspace    = atoi(data_array[1]);
                         blue_colorspace     = atoi(data_array[2]);
 
+                        valRed = red_colorspace;
+                        valGreen = green_colorspace;
+                        valBlue = blue_colorspace;
+
+                        vTaskDelay(1000 / portTICK_PERIOD_MS);
+
                         printf("RED COLORSPACE      :: %d\n", red_colorspace);
                         printf("GREEN COLORSPACE    :: %d\n", green_colorspace);
                         printf("BLUE COLORSPACE     :: %d\n", blue_colorspace);
 
                         // ACK FOR SUCCESSFUL DATA RETRIEVE
-                        BLE_notify_data(RECEIVE_SUCCESSFUL, rgb_characteristics_value);
+                        // BLE_notify_data(RECEIVE_SUCCESSFUL, rgb_characteristics_value);
                     }
 
                     // RECEIVE BRIGHTNESS VALUE
-                    if(BLE_COMM_DATABASE_TABLE[brightness_characteristics_value]==param->write.handle){
+                    else if(BLE_COMM_DATABASE_TABLE[brightness_characteristics_value]==param->write.handle){
 
-                        brightness_value    = atoi(BLE_write_value);
-                        printf("BRIGHTNESS VALUE    :: %d\n", brightness_value);
+                        brightness_value  = atof(BLE_write_value);
+                        bright = brightness_value;
+                        printf("BRIGHTNESS VALUE    :: %f\n", brightness_value);
 
                         // ACK FOR SUCCESSFUL DATA RETRIEVE
-                        BLE_notify_data(RECEIVE_SUCCESSFUL, brightness_characteristics_value);
+                        // BLE_notify_data(RECEIVE_SUCCESSFUL, brightness_characteristics_value);
                     }
 
                     // RECEIVE MODE VALUE
-                    if(BLE_COMM_DATABASE_TABLE[mode_characteristics_value]==param->write.handle){
+                    else if(BLE_COMM_DATABASE_TABLE[mode_characteristics_value]==param->write.handle){
 
                         mode                = atoi(BLE_write_value);
+                        LEDState            = mode;
                         printf("MODE                :: %d\n", mode);
 
                         // ACK FOR SUCCESSFUL DATA RETRIEVE
-                        BLE_notify_data(RECEIVE_SUCCESSFUL, mode_characteristics_value);
+                        // BLE_notify_data(RECEIVE_SUCCESSFUL, mode_characteristics_value);
                     }
                 }
             }
@@ -688,20 +678,141 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
     } while (0);
 }
 
+void LED_Task(void* pvParameters)
+{
+    rmt_config_t config = RMT_DEFAULT_CONFIG_TX(32, RMT_TX_CHANNEL);
+    // set counter clock to 40MHz
+    config.clk_div = 2;
+
+    ESP_ERROR_CHECK(rmt_config(&config));
+    ESP_ERROR_CHECK(rmt_driver_install(config.channel, 0, 0));
+
+    // install ws2812 driver
+    led_strip_config_t strip_config = LED_STRIP_DEFAULT_CONFIG(LED_NUMBER, (led_strip_dev_t)config.channel);
+    led_strip_t *strip = led_strip_new_rmt_ws2812(&strip_config);
+    if(!strip) 
+    {
+        ESP_LOGE(TAG, "install WS2812 driver failed");
+    }
+    // Clear LED strip (turn off all LEDs)
+    ESP_ERROR_CHECK(strip->clear(strip, 100)); 
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    while(1)
+    {
+        printf("red: %d, green: %d, blue: %d, case: %d\n", valRed, valGreen, valBlue, LEDState);
+        switch(LEDState)
+        {
+          case IDEAL:
+                printf("ideal\n");
+                for (int i = 0; i < LED_NUMBER; i++) 
+                {
+                    // ESP_ERROR_CHECK(strip->set_pixel(strip, i, 48, 245, 185)); //turquoise color
+                    // ESP_ERROR_CHECK(strip->set_pixel(strip, i, 48, 255, 140)); //turquoise color  strip
+                    ESP_ERROR_CHECK(strip->set_pixel(strip, i, bright*valRed, bright*valGreen, bright*valBlue)); //turquoise color  strip
+                }
+                ESP_ERROR_CHECK(strip->refresh(strip, 50));
+                break;
+
+          case BREATHING:
+                printf("breathing\n");
+                for(int j = 1; j < 35; j ++)
+                {
+                    f = 0.025 * j;
+                    for (int i = 0; i < LED_NUMBER; i++) 
+                    {
+                        // ESP_ERROR_CHECK(strip->set_pixel(strip, i, f*48, f*245, f*185)); //turquoise color
+                        // ESP_ERROR_CHECK(strip->set_pixel(strip, i, f*48, f*255, f*140)); //turquoise color  strip
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i, f*red_colorspace, f*green_colorspace, f*blue_colorspace)); //turquoise color  strip
+
+                    }
+                    ESP_ERROR_CHECK(strip->refresh(strip, 50));
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                }
+
+                for(int j = 35; j >= 1; j--)
+                {
+                    f = 0.025 * j;
+                    for (int i = 0; i < LED_NUMBER; i ++) 
+                    {
+                        // ESP_ERROR_CHECK(strip->set_pixel(strip, i, f*48, f*245, f*185));
+                        // ESP_ERROR_CHECK(strip->set_pixel(strip, i, f*48, f*255, f*140)); //strip
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i, f*red_colorspace, f*green_colorspace, f*blue_colorspace)); //strip
+                    }
+                    ESP_ERROR_CHECK(strip->refresh(strip, 50));
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                } 
+                strip->clear(strip, 20);
+                // vTaskDelay(1);
+
+                break;
+          case CLEAR:
+                printf("clear\n");
+                for (int i = 0; i < LED_NUMBER; i++) 
+                {
+                    ESP_ERROR_CHECK(strip->set_pixel(strip, i, 0, 0, 0));
+                }
+                ESP_ERROR_CHECK(strip->refresh(strip, 10)); 
+                strip->clear(strip, 20);
+                break;
+                // vTaskDelay(1);
+
+          case RUNNING_TRAIL:
+                for(int j = 0; j < LED_NUMBER - 10; j++)
+                {
+                    for(int i = j; i < j + 6; i++)
+                    {
+
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i, 0.1*valRed, 0.1*valGreen, 0.1*valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i+1, 0.5*valRed, 0.5*valGreen, 0.5*valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i+2, 0.7*valRed, 0.7*valGreen, 0.7*valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i+3, valRed, valGreen, valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i+4, valRed, valGreen, valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i+5, valRed, valGreen, valBlue));
+                    }
+                    ESP_ERROR_CHECK(strip->refresh(strip, 100));
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    ESP_ERROR_CHECK(strip->set_pixel(strip, j, 0, 0, 0));
+                    ESP_ERROR_CHECK(strip->refresh(strip, 10));   
+                } 
+                strip->clear(strip, 10); 
+                for(int j = LED_NUMBER - 10; j >= 10; j--)
+                {
+                    for(int i = j; i > j - 6; i--)
+                    {
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i-5, 0.1*valRed, 0.1*valGreen, 0.1*valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i-4, 0.5*valRed, 0.5*valGreen, 0.5*valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i-3, 0.7*valRed, 0.7*valGreen, 0.7*valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i-2, valRed, valGreen, valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i-1, valRed, valGreen, valBlue));
+                        ESP_ERROR_CHECK(strip->set_pixel(strip, i, valRed, valGreen, valBlue));
+                    }
+                    ESP_ERROR_CHECK(strip->refresh(strip, 100));
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    ESP_ERROR_CHECK(strip->set_pixel(strip, j, 0, 0, 0));
+                    ESP_ERROR_CHECK(strip->refresh(strip, 10));   
+                } 
+                strip->clear(strip, 10); 
+                vTaskDelay(1);
+                break;
+        }
+        vTaskDelay(1);
+        // vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    vTaskDelay(1); 
+    
+
+}
+
 void app_main(void)
 {
-    number_of_chunks_overall_data = 3;
-    number_of_chunks_suste_data = 3;
-    number_of_chunks_thikka_data = 3;
-    number_of_chunks_babbal_data = 3;
+    red_colorspace      = 255;
+    green_colorspace    = 255;
+    blue_colorspace     = 255;
+    brightness_value    = 0.5; 
 
-    // Default values for App features and Username (On ESP32 Reset)
-    strcpy(g_last_username, "Yatri");
-    strcpy(g_last_bikename, "UN-NAMED");
-    strcpy(gps_tracking, "K");
-    strcpy(shake_mode, "l");
-    strcpy(anti_theft, "m");
-
+    LEDState = IDEAL;
+    xTaskCreate(LED_Task, "LED_Task", 4096, NULL, 1, NULL);
     // Initialize TWDT
     ESP_ERROR_CHECK(esp_task_wdt_init(WDT_TIMEOUT, false));
 
@@ -801,5 +912,5 @@ void app_main(void)
      */
 
     // remove_all_bonded_devices();
-    vTaskDelay(3000 / portTICK_PERIOD_MS);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
 }
